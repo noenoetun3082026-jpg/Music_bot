@@ -1,5 +1,6 @@
-pyrogram
-pytgcalls
+pyrogram==2.0.106
+pytgcalls==3.0.0b1
 yt-dlp
 tgcrypto
 aiohttp
+certifi
