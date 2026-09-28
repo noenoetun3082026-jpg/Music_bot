@@ -5,17 +5,14 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 TOKEN = os.getenv("BOT_TOKEN")
 OWNER = int(os.getenv("BOT_OWNER_ID", "0"))
 DB = "/data/bot.db"
-STICKER_SET = "Playing_Cards"
 BET = 100
+STICKER_SET = "Playing_Cards"
 
 db = sqlite3.connect(DB, check_same_thread=False)
-db.execute("""
-CREATE TABLE IF NOT EXISTS coins(
-    uid INTEGER PRIMARY KEY,
-    username TEXT,
-    balance INTEGER DEFAULT 0
-)
-""")
+db.execute("""CREATE TABLE IF NOT EXISTS coins(
+uid INTEGER PRIMARY KEY,
+username TEXT,
+balance INTEGER DEFAULT 0)""")
 db.commit()
 
 games = {}
@@ -34,84 +31,91 @@ def get_balance(uid):
 
 
 def save_user(uid, username, balance=None):
-    old = get_balance(uid)
     if balance is None:
-        balance = old
+        balance = get_balance(uid)
+
     db.execute("""
-        INSERT INTO coins(uid,username,balance)
-        VALUES(?,?,?)
-        ON CONFLICT(uid) DO UPDATE SET
-        username=excluded.username,
-        balance=excluded.balance
+    INSERT INTO coins(uid,username,balance)
+    VALUES(?,?,?)
+    ON CONFLICT(uid) DO UPDATE SET
+    username=excluded.username,
+    balance=excluded.balance
     """, (uid, username, balance))
     db.commit()
 
 
 def card_value(card):
     r = card[:-1]
-    if r in ["J","Q","K","10"]:
+
+    if r in ["10","J","Q","K"]:
         return 0
+
     if r == "A":
         return 1
+
     return int(r)
 
 
 def score(cards):
-    return sum(card_value(x) for x in cards) % 10
+    return sum(card_value(c) for c in cards) % 10
 
 
-def is_shan(cards):
-    return len(cards) == 2 and score(cards) in [8, 9]
+def shan(cards):
+    return len(cards) == 2 and score(cards) in [8,9]
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+
+    save_user(
+        u.id,
+        u.username or u.full_name
+    )
+
+    await update.message.reply_text(
+        "🃏 SHAN KOE MEE BOT ONLINE!\n\n"
+        "/common - 📋 Commands\n"
+        "/game - 🎮 Game စမယ်\n"
+        "/balance - 💰 Coin ကြည့်မယ်"
+    )
 
 
 async def common(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🃏 SHAN KOE MEE\n\n"
         "/game - 🎮 Game စမယ်\n"
-        "/balance - 💰 Coin ကြည့်မယ်\n"
+        "/balance - 💰 ကိုယ့် Coin ကြည့်မယ်\n"
         "/balance @username - 👤 သူ့ Coin ကြည့်မယ်\n"
         "/common - 📋 Commands\n\n"
-        "👑 OWNER COMMANDS\n"
+        "👑 OWNER\n"
         "/addcoin @username 1000\n"
         "/delcoin @username 100"
     )
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    save_user(
-        update.effective_user.id,
-        update.effective_user.username or update.effective_user.full_name
-    )
-    await update.message.reply_text(
-        "🃏 SHAN KOE MEE BOT ONLINE!\n\n"
-        "/common - Commands\n"
-        "/game - Game စမယ်\n"
-        "/balance - Coin ကြည့်မယ်"
-    )
-
-
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+    u = update.effective_user
 
     save_user(
-        user.id,
-        user.username or user.full_name
+        u.id,
+        u.username or u.full_name
     )
 
     if context.args:
-        target = context.args[0].lstrip("@")
+        username = context.args[0].lstrip("@")
+
         x = db.execute(
             "SELECT balance FROM coins WHERE username=?",
-            (target,)
+            (username,)
         ).fetchone()
 
         await update.message.reply_text(
-            f"💰 @{target}: {x[0] if x else 0} Coins"
+            f"💰 @{username}: {x[0] if x else 0} Coins"
         )
         return
 
     await update.message.reply_text(
-        f"💰 Your Balance: {get_balance(user.id)} Coins"
+        f"💰 Your Balance: {get_balance(u.id)} Coins"
     )
 
 
@@ -130,11 +134,13 @@ async def addcoin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         amount = int(context.args[1])
     except:
-        await update.message.reply_text("Amount မှန်အောင်ထည့်ပါ။")
+        await update.message.reply_text("❌ Amount မှားနေပါတယ်။")
         return
 
     if amount <= 0:
-        await update.message.reply_text("Amount က 0 ထက်ကြီးရမယ်။")
+        await update.message.reply_text(
+            "❌ Amount က 0 ထက်ကြီးရမယ်။"
+        )
         return
 
     x = db.execute(
@@ -144,16 +150,22 @@ async def addcoin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not x:
         await update.message.reply_text(
-            "❌ ဒီ User က Bot နဲ့ အရင် /start လုပ်ထားရမယ်။"
+            "❌ User က Bot နဲ့ /start အရင်လုပ်ထားရမယ်။"
         )
         return
 
-    save_user(x[0], username, x[1] + amount)
+    new_balance = x[1] + amount
+
+    save_user(
+        x[0],
+        username,
+        new_balance
+    )
 
     await update.message.reply_text(
         f"✅ @{username}\n"
         f"💰 +{amount} Coins\n"
-        f"Balance: {x[1] + amount}"
+        f"Balance: {new_balance}"
     )
 
 
@@ -172,11 +184,15 @@ async def delcoin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         amount = int(context.args[1])
     except:
-        await update.message.reply_text("Amount မှန်အောင်ထည့်ပါ။")
+        await update.message.reply_text(
+            "❌ Amount မှားနေပါတယ်။"
+        )
         return
 
     if amount <= 0:
-        await update.message.reply_text("Amount က 0 ထက်ကြီးရမယ်။")
+        await update.message.reply_text(
+            "❌ Amount က 0 ထက်ကြီးရမယ်။"
+        )
         return
 
     x = db.execute(
@@ -185,12 +201,18 @@ async def delcoin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ).fetchone()
 
     if not x:
-        await update.message.reply_text("❌ User မတွေ့ပါ။")
+        await update.message.reply_text(
+            "❌ User မတွေ့ပါ။"
+        )
         return
 
     new_balance = max(0, x[1] - amount)
 
-    save_user(x[0], username, new_balance)
+    save_user(
+        x[0],
+        username,
+        new_balance
+    )
 
     await update.message.reply_text(
         f"✅ @{username}\n"
@@ -202,7 +224,7 @@ async def delcoin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
         await update.message.reply_text(
-            "❌ Game ကို Group ထဲမှာပဲ စလို့ရပါတယ်။"
+            "❌ Game ကို Group ထဲမှာပဲ ကစားလို့ရပါတယ်။"
         )
         return
 
@@ -210,25 +232,31 @@ async def game(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if gid in games:
         await update.message.reply_text(
-            "🎮 Game တစ်ခုရှိပြီးသားပါ။"
+            "🎮 Game ရှိပြီးသားပါ။"
         )
         return
 
-    user = update.effective_user
+    u = update.effective_user
 
     save_user(
-        user.id,
-        user.username or user.full_name
+        u.id,
+        u.username or u.full_name
     )
 
     games[gid] = {
-        "creator": user.id,
+        "creator": u.id,
         "players": {}
     }
 
     kb = [[
-        InlineKeyboardButton("➕ JOIN", callback_data="join"),
-        InlineKeyboardButton("▶️ START", callback_data="start")
+        InlineKeyboardButton(
+            "➕ JOIN",
+            callback_data="join"
+        ),
+        InlineKeyboardButton(
+            "▶️ START",
+            callback_data="start"
+        )
     ]]
 
     await update.message.reply_text(
@@ -242,13 +270,14 @@ async def game(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer()
-
     gid = q.message.chat.id
-    game_data = games.get(gid)
+    g = games.get(gid)
 
-    if not game_data:
-        return
+    if not g:
+        return await q.answer(
+            "❌ Game မရှိတော့ပါ။",
+            show_alert=True
+        )
 
     uid = q.from_user.id
     username = q.from_user.username or q.from_user.full_name
@@ -257,104 +286,122 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if q.data == "join":
 
-        if uid in game_data["players"]:
+        if uid in g["players"]:
             return await q.answer(
                 "သင် JOIN လုပ်ပြီးသားပါ။",
                 show_alert=True
             )
 
-        if len(game_data["players"]) >= 5:
+        if len(g["players"]) >= 5:
             return await q.answer(
                 "❌ Player 5 ယောက်ပြည့်ပါပြီ။",
                 show_alert=True
             )
 
-        if get_balance(uid) < BET:
+        money = get_balance(uid)
+
+        if money < BET:
             return await q.answer(
-                "❌ Coin 100 မရှိပါ။",
+                f"❌ Coin မလုံလောက်ပါ။\n"
+                f"လိုအပ်သည်: {BET}\n"
+                f"လက်ရှိ: {money}",
                 show_alert=True
             )
 
-        game_data["players"][uid] = {
+        g["players"][uid] = {
             "username": username,
             "cards": [],
             "done": False
         }
 
         players = "\n".join(
-            "• " + x["username"]
-            for x in game_data["players"].values()
+            "• " + p["username"]
+            for p in g["players"].values()
         )
 
         kb = [[
-            InlineKeyboardButton("➕ JOIN", callback_data="join"),
-            InlineKeyboardButton("▶️ START", callback_data="start")
+            InlineKeyboardButton(
+                "➕ JOIN",
+                callback_data="join"
+            ),
+            InlineKeyboardButton(
+                "▶️ START",
+                callback_data="start"
+            )
         ]]
+
+        await q.answer("✅ JOIN အောင်မြင်ပါတယ်။")
 
         await q.edit_message_text(
             "🃏 SHAN KOE MEE\n\n"
-            "👥 Players:\n" + players +
+            "👥 Players:\n"
+            + players +
             "\n\n💰 Bet: 100 Coins",
             reply_markup=InlineKeyboardMarkup(kb)
         )
 
-    elif q.data == "start":
+        return
 
-        if uid != game_data["creator"]:
+    if q.data == "start":
+
+        if uid != g["creator"]:
             return await q.answer(
                 "❌ Game ဖွင့်သူပဲ START လုပ်နိုင်ပါတယ်။",
                 show_alert=True
             )
 
-        if len(game_data["players"]) < 2:
+        if len(g["players"]) < 2:
             return await q.answer(
                 "❌ အနည်းဆုံး 2 ယောက်လိုပါတယ်။",
                 show_alert=True
             )
 
-        for pid in game_data["players"]:
+        for pid in g["players"]:
             if get_balance(pid) < BET:
                 return await q.answer(
                     "❌ Player တစ်ယောက်မှာ Coin မလုံလောက်ပါ။",
                     show_alert=True
                 )
 
-        for pid, player in game_data["players"].items():
+        for pid, p in g["players"].items():
             save_user(
                 pid,
-                player["username"],
+                p["username"],
                 get_balance(pid) - BET
             )
 
         deck = DECK.copy()
         random.shuffle(deck)
 
-        for pid in game_data["players"]:
-            game_data["players"][pid]["cards"] = [
-                deck.pop(), deck.pop()
+        for pid in g["players"]:
+            g["players"][pid]["cards"] = [
+                deck.pop(),
+                deck.pop()
             ]
+
+        await q.answer("🃏 Cards dealt!")
 
         await q.edit_message_text(
             "🃏 CARDS DEALT!\n\n"
-            "တစ်ယောက်ချင်းစီရဲ့ Card ကို Bot က ပြပါမယ်။"
+            "တစ်ယောက်ချင်းစီ DRAW / PASS လုပ်ပါ။"
         )
 
-        for pid, player in game_data["players"].items():
+        for pid, p in g["players"].items():
 
             text = (
-                f"👤 {player['username']}\n"
-                f"🎴 Card: {player['cards'][0]}, "
-                f"{player['cards'][1]}\n"
-                f"🔢 Score: {score(player['cards'])}"
+                f"👤 {p['username']}\n"
+                f"🎴 {', '.join(p['cards'])}\n"
+                f"🔢 Score: {score(p['cards'])}"
             )
 
-            if is_shan(player["cards"]):
-                player["done"] = True
+            if shan(p["cards"]):
+                p["done"] = True
                 text += "\n\n🔥 SHAN!"
 
             await q.message.reply_text(text)
 
-            if not player["done"]:
+            if not p["done"]:
+
                 kb = [[
                     InlineKeyboardButton(
                         "🎴 DRAW",
@@ -367,67 +414,76 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]]
 
                 await q.message.reply_text(
-                    f"👤 {player['username']} ရွေးပါ။",
+                    "ရွေးပါ 👇",
                     reply_markup=InlineKeyboardMarkup(kb)
                 )
 
         await finish(gid, q)
+        return
 
-
-    elif q.data.startswith("draw:"):
+    if q.data.startswith("draw:"):
 
         pid = int(q.data.split(":")[1])
 
-        if pid != uid:
+        if uid != pid:
             return await q.answer(
                 "❌ ကိုယ့်အလှည့်မဟုတ်ပါ။",
                 show_alert=True
             )
 
-        player = game_data["players"].get(uid)
+        p = g["players"].get(uid)
 
-        if not player or player["done"]:
+        if not p or p["done"]:
             return
 
         used = []
 
-        for p in game_data["players"].values():
-            used += p["cards"]
+        for x in g["players"].values():
+            used += x["cards"]
 
-        available = [c for c in DECK if c not in used]
+        available = [
+            c for c in DECK
+            if c not in used
+        ]
 
         card = random.choice(available)
-        player["cards"].append(card)
-        player["done"] = True
+
+        p["cards"].append(card)
+        p["done"] = True
+
+        await q.answer("🎴 Third Card ရပြီ!")
 
         await q.message.reply_text(
-            f"🎴 {player['username']} Third Card: {card}\n"
-            f"🔢 Score: {score(player['cards'])}"
+            f"👤 {p['username']}\n"
+            f"🎴 Third Card: {card}\n"
+            f"🔢 Score: {score(p['cards'])}"
         )
 
         await finish(gid, q)
+        return
 
-
-    elif q.data.startswith("pass:"):
+    if q.data.startswith("pass:"):
 
         pid = int(q.data.split(":")[1])
 
-        if pid != uid:
+        if uid != pid:
             return await q.answer(
                 "❌ ကိုယ့်အလှည့်မဟုတ်ပါ။",
                 show_alert=True
             )
 
-        player = game_data["players"].get(uid)
+        p = g["players"].get(uid)
 
-        if not player:
+        if not p:
             return
 
-        player["done"] = True
+        p["done"] = True
+
+        await q.answer("✋ PASS")
 
         await q.message.reply_text(
-            f"✋ {player['username']} PASS\n"
-            f"🔢 Score: {score(player['cards'])}"
+            f"👤 {p['username']} PASS\n"
+            f"🔢 Score: {score(p['cards'])}"
         )
 
         await finish(gid, q)
@@ -447,11 +503,11 @@ async def finish(gid, q):
 
     results = []
 
-    for pid, player in g["players"].items():
+    for pid, p in g["players"].items():
         results.append((
-            score(player["cards"]),
+            score(p["cards"]),
             pid,
-            player
+            p
         ))
 
     highest = max(x[0] for x in results)
@@ -466,43 +522,38 @@ async def finish(gid, q):
 
     text = "🏆 SHAN KOE MEE RESULT\n\n"
 
-    for s, pid, player in results:
+    for s, pid, p in results:
         text += (
-            f"👤 {player['username']}\n"
-            f"🎴 {', '.join(player['cards'])}\n"
+            f"👤 {p['username']}\n"
+            f"🎴 {', '.join(p['cards'])}\n"
             f"🔢 {s}\n\n"
         )
 
     text += f"💰 Pool: {pool} Coins\n\n"
 
-    if len(winners) == 1:
-        _, pid, player = winners[0]
-
+    for _, pid, p in winners:
         save_user(
             pid,
-            player["username"],
-            get_balance(pid) + pool
+            p["username"],
+            get_balance(pid) + prize
         )
+
+    if len(winners) == 1:
+        p = winners[0][2]
 
         text += (
-            f"🏆 WINNER: {player['username']}\n"
-            f"💰 +{pool} Coins"
+            f"🏆 WINNER: {p['username']}\n"
+            f"💰 +{prize} Coins"
         )
-
     else:
-        names = []
-
-        for _, pid, player in winners:
-            save_user(
-                pid,
-                player["username"],
-                get_balance(pid) + prize
-            )
-            names.append(player["username"])
+        names = ", ".join(
+            x[2]["username"]
+            for x in winners
+        )
 
         text += (
-            "🤝 DRAW\n"
-            f"🏆 {', '.join(names)}\n"
+            f"🤝 DRAW\n"
+            f"🏆 {names}\n"
             f"💰 Each +{prize} Coins"
         )
 
@@ -511,12 +562,13 @@ async def finish(gid, q):
     del games[gid]
 
 
-async def save_message_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def save_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user:
+        u = update.effective_user
+
         save_user(
-            update.effective_user.id,
-            update.effective_user.username
-            or update.effective_user.full_name
+            u.id,
+            u.username or u.full_name
         )
 
 
@@ -536,7 +588,7 @@ async def post_init(app):
         for i, sticker in enumerate(pack.stickers[:52]):
             stickers[DECK[i]] = sticker.file_id
 
-        print("Card stickers loaded:", len(stickers))
+        print("Cards loaded:", len(stickers))
 
     except Exception as e:
         print("Sticker error:", e)
@@ -564,7 +616,7 @@ def main():
     app.add_handler(
         MessageHandler(
             filters.ALL,
-            save_message_user
+            save_user_message
         )
     )
 
