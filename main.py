@@ -6,7 +6,6 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    InputMediaPhoto,
 )
 from telegram.ext import (
     Application,
@@ -15,25 +14,23 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# =========================================================
-# SETTINGS
-# =========================================================
-
 TOKEN = os.getenv("BOT_TOKEN")
 
+# Telegram sticker set
+STICKER_SET_NAME = "Playing_Cards"
+
 MAX_PLAYERS = 5
+
+games = {}
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 
-# Active games
-games = {}
-
 
 # =========================================================
-# CARD SYSTEM
+# SHAN KOE MEE CARDS
 # =========================================================
 
 SUITS = ["♠", "♥", "♦", "♣"]
@@ -54,18 +51,8 @@ RANKS = [
     "K",
 ]
 
-SUIT_API = {
-    "♠": "S",
-    "♥": "H",
-    "♦": "D",
-    "♣": "C",
-}
-
 
 def create_deck():
-    """
-    Create a normal 52-card deck.
-    """
     deck = []
 
     for suit in SUITS:
@@ -77,10 +64,11 @@ def create_deck():
     return deck
 
 
+# =========================================================
+# SHAN KOE MEE SCORE
+# =========================================================
+
 def card_value(card):
-    """
-    Shan Koe Mee card value.
-    """
 
     rank = card[:-1]
 
@@ -94,65 +82,93 @@ def card_value(card):
 
 
 def calculate_score(hand):
-    """
-    Last digit of total.
-    """
 
-    total = sum(card_value(card) for card in hand)
+    total = sum(
+        card_value(card)
+        for card in hand
+    )
 
     return total % 10
 
 
 def is_auto_shan(hand):
-    """
-    Two-card 8 or 9.
-    """
 
-    if len(hand) != 2:
-        return False
-
-    return calculate_score(hand) in [8, 9]
-
-
-def card_image_url(card):
-    """
-    Convert card to Deck of Cards API image URL.
-
-    Example:
-    AS = Ace of Spades
-    7H = Seven of Hearts
-    0S = Ten of Spades
-    """
-
-    rank = card[:-1]
-    suit = card[-1]
-
-    if rank == "10":
-        api_rank = "0"
-    else:
-        api_rank = rank
-
-    api_suit = SUIT_API[suit]
-
-    return f"https://deckofcardsapi.com/static/img/{api_rank}{api_suit}.png"
+    return (
+        len(hand) == 2
+        and calculate_score(hand) in [8, 9]
+    )
 
 
 # =========================================================
-# GAME HELPERS
+# STICKER SET
 # =========================================================
 
-def get_game(chat_id):
-    return games.get(chat_id)
+async def load_card_stickers(bot):
 
+    sticker_set = await bot.get_sticker_set(
+        name=STICKER_SET_NAME
+    )
+
+    stickers = sticker_set.stickers
+
+    if len(stickers) < 52:
+        raise RuntimeError(
+            f"{STICKER_SET_NAME} မှာ "
+            f"{len(stickers)} ချပ်ပဲရှိပါတယ်။ "
+            "52 ချပ်လိုပါတယ်။"
+        )
+
+    return stickers[:52]
+
+
+# =========================================================
+# CREATE STICKER MAP
+# =========================================================
+
+async def create_sticker_map(bot):
+
+    stickers = await load_card_stickers(bot)
+
+    # IMPORTANT:
+    # Playing_Cards sticker set ထဲက order ကို
+    # A♠ -> 2♠ -> ... -> K♠
+    # A♥ -> ... -> K♥
+    # A♦ -> ... -> K♦
+    # A♣ -> ... -> K♣
+    # လို့သတ်မှတ်ထားပါတယ်။
+
+    cards = [
+        rank + suit
+        for suit in SUITS
+        for rank in RANKS
+    ]
+
+    mapping = {}
+
+    for card, sticker in zip(cards, stickers):
+        mapping[card] = sticker.file_id
+
+    return mapping
+
+
+# =========================================================
+# PLAYER NAME
+# =========================================================
 
 def player_name(user):
+
     if user.username:
-        return f"@{user.username}"
+        return "@" + user.username
 
     return user.first_name or "Player"
 
 
+# =========================================================
+# LOBBY
+# =========================================================
+
 def lobby_keyboard():
+
     return InlineKeyboardMarkup(
         [
             [
@@ -171,7 +187,8 @@ def lobby_keyboard():
     )
 
 
-def game_keyboard():
+def draw_keyboard():
+
     return InlineKeyboardMarkup(
         [
             [
@@ -185,26 +202,25 @@ def game_keyboard():
 
 
 def lobby_text(game):
-    creator = game["creator_name"]
-
-    players = game["players"]
 
     text = (
         "🃏 <b>SHAN KOE MEE</b>\n\n"
-        f"👤 အခန်းဖွင့်သူ: <b>{creator}</b>\n"
-        f"👥 ကစားသမား: <b>{len(players)}/{MAX_PLAYERS}</b>\n\n"
+        f"👤 အခန်းဖွင့်သူ: "
+        f"<b>{game['creator_name']}</b>\n"
+        f"👥 ကစားသမား: "
+        f"<b>{len(game['players'])}/{MAX_PLAYERS}</b>\n\n"
     )
 
-    if not players:
-        text += "မရှိသေးပါ\n\n"
+    for i, user in enumerate(
+        game["players"],
+        1,
+    ):
+        text += (
+            f"{i}. "
+            f"{player_name(user)}\n"
+        )
 
-    else:
-        for i, user in enumerate(players, 1):
-            text += f"{i}. {player_name(user)}\n"
-
-        text += "\n"
-
-    text += "🎴 ဝင်ကစားရန် ခလုတ်နှိပ်ပါ။"
+    text += "\n🎴 ဝင်ကစားရန် ခလုတ်နှိပ်ပါ။"
 
     return text
 
@@ -213,13 +229,16 @@ def lobby_text(game):
 # START
 # =========================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
 
     await update.message.reply_text(
-        "🎀 <b>SHAN KOE MEE BOT</b>\n\n"
-        "🃏 Group ထဲမှာ ကစားနိုင်ပါတယ်။\n\n"
-        "🎮 /game — ဂိမ်းစရန်\n"
-        "❓ /help — အသုံးပြုနည်း",
+        "🃏 <b>SHAN KOE MEE BOT</b>\n\n"
+        "/game — ဂိမ်းဖွင့်ရန်\n"
+        "/help — အသုံးပြုနည်း\n"
+        "/testcards — Playing Cards စစ်ရန်",
         parse_mode="HTML",
     )
 
@@ -228,45 +247,112 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # HELP
 # =========================================================
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
 
     await update.message.reply_text(
-        "🎀 <b>SHAN KOE MEE HELP</b>\n\n"
-        "🎮 /game\n"
-        "ဂိမ်းအခန်းဖွင့်ရန်\n\n"
-        "🃏 ကဒ် ၂ ချပ်ရမယ်\n"
-        "🔢 10/J/Q/K = 0 မှတ်\n"
+        "🃏 <b>SHAN KOE MEE</b>\n\n"
+        "🎮 /game — အခန်းဖွင့်ရန်\n"
+        "🧪 /testcards — ဖဲ Sticker စမ်းရန်\n\n"
         "🅰️ A = 1 မှတ်\n"
-        "✨ ၈ / ၉ = Auto Shan / Koe Mee\n"
-        "➕ ၈ / ၉ မဟုတ်ရင် တတိယကဒ်ယူနိုင်ပါတယ်။\n\n"
-        "👥 Player အများဆုံး ၅ ယောက်",
+        "2–9 = မူရင်းအမှတ်\n"
+        "10/J/Q/K = 0 မှတ်\n"
+        "✨ 8 / 9 = Auto Shan / Koe Mee\n\n"
+        "👥 Player အများဆုံး 5 ယောက်",
         parse_mode="HTML",
     )
 
 
 # =========================================================
-# CREATE GAME
+# TEST STICKERS
 # =========================================================
 
-async def game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def test_cards(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
 
-    chat = update.effective_chat
-    user = update.effective_user
+    try:
 
-    # Group only
-    if chat.type not in ["group", "supergroup"]:
+        stickers = await load_card_stickers(
+            context.bot
+        )
+
+    except Exception as e:
+
+        logging.error(
+            "Sticker error: %s",
+            e,
+        )
 
         await update.message.reply_text(
-            "❌ ဒီ command ကို Group ထဲမှာပဲ အသုံးပြုပါ။"
+            "❌ Playing_Cards sticker set ကို "
+            "ဖတ်မရပါ။\n\n"
+            f"Error: {e}"
         )
 
         return
 
-    # Existing game
+    await update.message.reply_text(
+        f"🃏 Playing_Cards\n"
+        f"Sticker: {len(stickers)} ချပ်\n\n"
+        "ပထမ 5 ချပ်ကို စမ်းပြမယ်။"
+    )
+
+    for sticker in stickers[:5]:
+
+        await context.bot.send_sticker(
+            chat_id=update.effective_chat.id,
+            sticker=sticker.file_id,
+        )
+
+
+# =========================================================
+# GAME
+# =========================================================
+
+async def game_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.type not in [
+        "group",
+        "supergroup",
+    ]:
+
+        await update.message.reply_text(
+            "❌ Group ထဲမှာပဲ /game သုံးပါ။"
+        )
+
+        return
+
     if chat.id in games:
 
         await update.message.reply_text(
-            "⚠️ ဒီ Group မှာ ဂိမ်းအခန်းရှိပြီးသားပါ။"
+            "⚠️ ဒီ Group မှာ ဂိမ်းရှိပြီးသားပါ။"
+        )
+
+        return
+
+    # Test sticker set before opening game
+    try:
+
+        sticker_map = await create_sticker_map(
+            context.bot
+        )
+
+    except Exception as e:
+
+        await update.message.reply_text(
+            "❌ Playing_Cards sticker set "
+            "မရသေးပါ။\n\n"
+            f"{e}"
         )
 
         return
@@ -277,23 +363,49 @@ async def game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "players": [user],
         "deck": [],
         "hands": {},
+        "sticker_map": sticker_map,
         "started": False,
-        "message_id": None,
     }
 
     game = games[chat.id]
 
-    message = await update.message.reply_text(
+    await update.message.reply_text(
         lobby_text(game),
         reply_markup=lobby_keyboard(),
         parse_mode="HTML",
     )
 
-    game["message_id"] = message.message_id
+
+# =========================================================
+# SEND CARD STICKER
+# =========================================================
+
+async def send_card(
+    bot,
+    chat_id,
+    card,
+    sticker_map,
+):
+
+    sticker_id = sticker_map.get(card)
+
+    if not sticker_id:
+
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"❌ {card} sticker မတွေ့ပါ။",
+        )
+
+        return
+
+    await bot.send_sticker(
+        chat_id=chat_id,
+        sticker=sticker_id,
+    )
 
 
 # =========================================================
-# BUTTON HANDLER
+# BUTTON
 # =========================================================
 
 async def button_handler(
@@ -308,19 +420,19 @@ async def button_handler(
     chat = query.message.chat
     user = query.from_user
 
-    game = get_game(chat.id)
+    game = games.get(chat.id)
 
     if not game:
 
         await query.answer(
-            "❌ ဂိမ်းမရှိတော့ပါ။ /game နဲ့ ပြန်စပါ။",
+            "❌ ဂိမ်းမရှိတော့ပါ။",
             show_alert=True,
         )
 
         return
 
     # =====================================================
-    # JOIN GAME
+    # JOIN
     # =====================================================
 
     if query.data == "join_game":
@@ -334,8 +446,10 @@ async def button_handler(
 
             return
 
-        # Already joined
-        if any(p.id == user.id for p in game["players"]):
+        if any(
+            p.id == user.id
+            for p in game["players"]
+        ):
 
             await query.answer(
                 "✅ ဝင်ထားပြီးသားပါ။",
@@ -344,11 +458,10 @@ async def button_handler(
 
             return
 
-        # Full
         if len(game["players"]) >= MAX_PLAYERS:
 
             await query.answer(
-                "❌ Player ၅ ယောက်ပြည့်သွားပါပြီ။",
+                "❌ Player 5 ယောက်ပြည့်ပါပြီ။",
                 show_alert=True,
             )
 
@@ -379,20 +492,10 @@ async def button_handler(
 
             return
 
-        # Must be creator
         if user.id != game["creator_id"]:
 
             await query.answer(
-                "❌ အခန်းဖွင့်သူပဲ ဂိမ်းစနိုင်ပါတယ်။",
-                show_alert=True,
-            )
-
-            return
-
-        if len(game["players"]) < 1:
-
-            await query.answer(
-                "❌ Player မရှိသေးပါ။",
+                "❌ အခန်းဖွင့်သူပဲ စနိုင်ပါတယ်။",
                 show_alert=True,
             )
 
@@ -402,18 +505,17 @@ async def button_handler(
         game["deck"] = create_deck()
         game["hands"] = {}
 
-        # Change lobby message
         await query.edit_message_text(
             "🃏 <b>SHAN KOE MEE — GAME START</b>\n\n"
-            "🎴 ကဒ်များဝေပြီးပါပြီ။",
+            "🎴 ဖဲကဒ်များ ဝေပြီးပါပြီ။",
             parse_mode="HTML",
         )
 
-        # Deal 2 cards to each player
-        for player in game["players"]:
+        # =================================================
+        # DEAL TWO CARDS
+        # =================================================
 
-            if len(game["deck"]) < 2:
-                break
+        for player in game["players"]:
 
             hand = [
                 game["deck"].pop(),
@@ -422,76 +524,52 @@ async def button_handler(
 
             game["hands"][player.id] = hand
 
-            score_value = calculate_score(hand)
+            score = calculate_score(hand)
 
-            caption = (
-                "🃏 <b>SHAN KOE MEE</b>\n\n"
-                f"👤 <b>{player_name(player)}</b>\n\n"
-                f"🔢 အမှတ်: <b>{score_value}</b>"
+            # Card 1
+            await send_card(
+                context.bot,
+                chat.id,
+                hand[0],
+                game["sticker_map"],
             )
 
+            # Card 2
+            await send_card(
+                context.bot,
+                chat.id,
+                hand[1],
+                game["sticker_map"],
+            )
+
+            # Result
             if is_auto_shan(hand):
 
-                caption += (
-                    "\n\n"
-                    "✨ <b>AUTO SHAN / KOE MEE!</b> ✨"
+                result = (
+                    "✨ <b>AUTO SHAN / KOE MEE!</b> ✨\n\n"
+                    f"👤 {player_name(player)}\n"
+                    f"🔢 အမှတ်: <b>{score}</b>"
                 )
 
             else:
 
-                caption += (
-                    "\n\n"
-                    "➕ တတိယကဒ်လိုရင် Button ကိုနှိပ်ပါ။"
+                result = (
+                    f"👤 <b>{player_name(player)}</b>\n"
+                    f"🔢 အမှတ်: <b>{score}</b>\n\n"
+                    "တတိယကဒ်လိုရင် Button နှိပ်ပါ။"
                 )
 
-            media = [
-                InputMediaPhoto(
-                    media=card_image_url(hand[0]),
-                    caption=caption,
-                    parse_mode="HTML",
-                ),
-                InputMediaPhoto(
-                    media=card_image_url(hand[1])
-                ),
-            ]
-
-            try:
-
-                await context.bot.send_media_group(
-                    chat_id=chat.id,
-                    media=media,
-                )
-
-            except Exception as e:
-
-                logging.error(
-                    "Card image error: %s",
-                    e,
-                )
-
-                await context.bot.send_message(
-                    chat_id=chat.id,
-                    text=(
-                        f"🃏 {player_name(player)}\n"
-                        f"🔢 အမှတ်: {score_value}"
-                    ),
-                )
-
-        # Third card button
-        await context.bot.send_message(
-            chat_id=chat.id,
-            text=(
-                "🎴 <b>တတိယကဒ်လိုတဲ့ Player</b>\n"
-                "ကိုယ်တိုင် Button နှိပ်ပါ။"
-            ),
-            reply_markup=game_keyboard(),
-            parse_mode="HTML",
-        )
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text=result,
+                reply_markup=draw_keyboard(),
+                parse_mode="HTML",
+            )
 
         return
 
     # =====================================================
-    # DRAW THIRD CARD
+    # THIRD CARD
     # =====================================================
 
     if query.data == "draw_card":
@@ -505,11 +583,10 @@ async def button_handler(
 
             return
 
-        # Player must be in game
         if user.id not in game["hands"]:
 
             await query.answer(
-                "❌ ဒီဂိမ်းထဲမှာ မပါပါ။",
+                "❌ ဒီဂိမ်းမှာ မပါပါ။",
                 show_alert=True,
             )
 
@@ -517,7 +594,6 @@ async def button_handler(
 
         hand = game["hands"][user.id]
 
-        # Already 3 cards
         if len(hand) >= 3:
 
             await query.answer(
@@ -527,82 +603,63 @@ async def button_handler(
 
             return
 
-        # Auto Shan cannot draw
         if is_auto_shan(hand):
 
             await query.answer(
-                "✨ ၈/၉ ထွက်ပြီးသားဖြစ်လို့ Auto Shan ဖြစ်ပါတယ်။",
+                "✨ 8 / 9 ဖြစ်ပြီးသားမို့ Auto Shan ပါ။",
                 show_alert=True,
             )
 
             return
 
-        # No cards
-        if not game["deck"]:
+        third = game["deck"].pop()
 
-            await query.answer(
-                "❌ ကဒ်ကုန်သွားပါပြီ။",
-                show_alert=True,
-            )
+        hand.append(third)
 
-            return
+        score = calculate_score(hand)
 
-        # Draw third card
-        third_card = game["deck"].pop()
-
-        hand.append(third_card)
-
-        score_value = calculate_score(hand)
-
-        caption = (
-            "🃏 <b>တတိယကဒ်</b>\n\n"
-            f"👤 <b>{player_name(user)}</b>\n\n"
-            f"🔢 အမှတ်: <b>{score_value}</b>"
+        await send_card(
+            context.bot,
+            chat.id,
+            third,
+            game["sticker_map"],
         )
 
-        if score_value in [8, 9]:
+        if score in [8, 9]:
 
-            caption += (
-                "\n\n"
-                "✨ <b>KOE MEE!</b> ✨"
+            text = (
+                "✨ <b>KOE MEE!</b> ✨\n\n"
+                f"👤 {player_name(user)}\n"
+                f"🔢 အမှတ်: <b>{score}</b>"
             )
 
-        try:
+        else:
 
-            await context.bot.send_photo(
-                chat_id=chat.id,
-                photo=card_image_url(third_card),
-                caption=caption,
-                parse_mode="HTML",
+            text = (
+                f"👤 <b>{player_name(user)}</b>\n"
+                f"🔢 အမှတ်: <b>{score}</b>"
             )
 
-        except Exception as e:
-
-            logging.error(
-                "Third card image error: %s",
-                e,
-            )
-
-            await context.bot.send_message(
-                chat_id=chat.id,
-                text=caption,
-                parse_mode="HTML",
-            )
+        await context.bot.send_message(
+            chat_id=chat.id,
+            text=text,
+            parse_mode="HTML",
+        )
 
         return
 
 
 # =========================================================
-# ERROR HANDLER
+# ERROR
 # =========================================================
 
 async def error_handler(
-    update: object,
-    context: ContextTypes.DEFAULT_TYPE,
+    update,
+    context,
 ):
 
     logging.error(
-        "Telegram error: %s",
+        "Bot error: %s",
         context.error,
     )
 
@@ -616,7 +673,7 @@ def main():
     if not TOKEN:
 
         raise RuntimeError(
-            "BOT_TOKEN ENV variable မတွေ့ပါ။"
+            "BOT_TOKEN ENV မတွေ့ပါ။"
         )
 
     app = (
@@ -647,6 +704,13 @@ def main():
     )
 
     app.add_handler(
+        CommandHandler(
+            "testcards",
+            test_cards,
+        )
+    )
+
+    app.add_handler(
         CallbackQueryHandler(
             button_handler
         )
@@ -656,14 +720,12 @@ def main():
         error_handler
     )
 
-    print("🃏 Shan Koe Mee Bot is running...")
+    print(
+        "🃏 SHAN KOE MEE BOT RUNNING..."
+    )
 
     app.run_polling()
 
-
-# =========================================================
-# RUN
-# =========================================================
 
 if __name__ == "__main__":
     main()
