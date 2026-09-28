@@ -69,7 +69,7 @@ async def play_shan_koe_mee(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     # Telegram BotFather မှ ရရှိလာသော Token ကို ဤနေရာတွင် ထည့်ပါ
-    TOKEN = "YOUR_BOT_TOKEN_HERE"
+    TOKEN = "8710338486:AAGgcIzcGhe9uagoguy3B_HimQw0MCOzfoo"
     
     app = ApplicationBuilder().token(TOKEN).build()
     
