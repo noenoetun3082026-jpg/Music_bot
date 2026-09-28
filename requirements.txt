@@ -1,4 +1,1 @@
-pyrogram==2.0.106
-pytgcalls<3.0.0
-yt-dlp
-tgcrypto
+python-telegram-bot==22.8
