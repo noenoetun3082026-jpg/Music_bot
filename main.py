@@ -9,10 +9,13 @@ BET = 100
 STICKER_SET = "Playing_Cards"
 
 db = sqlite3.connect(DB, check_same_thread=False)
-db.execute("""CREATE TABLE IF NOT EXISTS coins(
-uid INTEGER PRIMARY KEY,
-username TEXT,
-balance INTEGER DEFAULT 0)""")
+db.execute("""
+CREATE TABLE IF NOT EXISTS coins(
+    uid INTEGER PRIMARY KEY,
+    username TEXT,
+    balance INTEGER DEFAULT 0
+)
+""")
 db.commit()
 
 games = {}
@@ -25,7 +28,8 @@ DECK = [r+s for s in SUITS for r in RANKS]
 
 def get_balance(uid):
     x = db.execute(
-        "SELECT balance FROM coins WHERE uid=?", (uid,)
+        "SELECT balance FROM coins WHERE uid=?",
+        (uid,)
     ).fetchone()
     return x[0] if x else 0
 
@@ -47,7 +51,7 @@ def save_user(uid, username, balance=None):
 def card_value(card):
     r = card[:-1]
 
-    if r in ["10","J","Q","K"]:
+    if r in ["10", "J", "Q", "K"]:
         return 0
 
     if r == "A":
@@ -60,8 +64,8 @@ def score(cards):
     return sum(card_value(c) for c in cards) % 10
 
 
-def shan(cards):
-    return len(cards) == 2 and score(cards) in [8,9]
+def is_shan(cards):
+    return len(cards) == 2 and score(cards) in [8, 9]
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -87,7 +91,7 @@ async def common(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/balance - 💰 ကိုယ့် Coin ကြည့်မယ်\n"
         "/balance @username - 👤 သူ့ Coin ကြည့်မယ်\n"
         "/common - 📋 Commands\n\n"
-        "👑 OWNER\n"
+        "👑 OWNER COMMANDS\n"
         "/addcoin @username 1000\n"
         "/delcoin @username 100"
     )
@@ -134,7 +138,9 @@ async def addcoin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         amount = int(context.args[1])
     except:
-        await update.message.reply_text("❌ Amount မှားနေပါတယ်။")
+        await update.message.reply_text(
+            "❌ Amount မှားနေပါတယ်။"
+        )
         return
 
     if amount <= 0:
@@ -263,7 +269,7 @@ async def game(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🃏 SHAN KOE MEE\n\n"
         "💰 Bet: 100 Coins\n"
         "👥 Players: 2–5\n\n"
-        "ကစားမယ့်သူ JOIN လုပ်ပါ။",
+        "ကစားမယ့်သူ JOIN လုပ်ပါ 👇",
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
@@ -330,13 +336,16 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         ]]
 
-        await q.answer("✅ JOIN အောင်မြင်ပါတယ်။")
+        await q.answer(
+            "✅ JOIN အောင်မြင်ပါတယ်။"
+        )
 
         await q.edit_message_text(
             "🃏 SHAN KOE MEE\n\n"
             "👥 Players:\n"
             + players +
-            "\n\n💰 Bet: 100 Coins",
+            "\n\n💰 Bet: 100 Coins\n"
+            "👥 2–5 Players",
             reply_markup=InlineKeyboardMarkup(kb)
         )
 
@@ -379,26 +388,46 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 deck.pop()
             ]
 
-        await q.answer("🃏 Cards dealt!")
+        await q.answer(
+            "🃏 Cards dealt!"
+        )
 
         await q.edit_message_text(
             "🃏 CARDS DEALT!\n\n"
-            "တစ်ယောက်ချင်းစီ DRAW / PASS လုပ်ပါ။"
+            "ကတ်တွေကို စတစ်ကာနဲ့ ပို့ပေးနေပါတယ်။"
         )
 
         for pid, p in g["players"].items():
 
+            await q.message.reply_text(
+                f"👤 {p['username']}"
+            )
+
+            # Card stickers
+            for card in p["cards"]:
+
+                sticker_id = stickers.get(card)
+
+                if sticker_id:
+                    await q.message.reply_sticker(
+                        sticker_id
+                    )
+                else:
+                    await q.message.reply_text(
+                        f"🎴 {card}"
+                    )
+
             text = (
-                f"👤 {p['username']}\n"
-                f"🎴 {', '.join(p['cards'])}\n"
                 f"🔢 Score: {score(p['cards'])}"
             )
 
-            if shan(p["cards"]):
+            if is_shan(p["cards"]):
                 p["done"] = True
-                text += "\n\n🔥 SHAN!"
+                text += "\n🔥 SHAN!"
 
-            await q.message.reply_text(text)
+            await q.message.reply_text(
+                text
+            )
 
             if not p["done"]:
 
@@ -414,7 +443,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]]
 
                 await q.message.reply_text(
-                    "ရွေးပါ 👇",
+                    f"👤 {p['username']} ရွေးပါ 👇",
                     reply_markup=InlineKeyboardMarkup(kb)
                 )
 
@@ -423,7 +452,9 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if q.data.startswith("draw:"):
 
-        pid = int(q.data.split(":")[1])
+        pid = int(
+            q.data.split(":")[1]
+        )
 
         if uid != pid:
             return await q.answer(
@@ -446,16 +477,31 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if c not in used
         ]
 
-        card = random.choice(available)
+        card = random.choice(
+            available
+        )
 
         p["cards"].append(card)
         p["done"] = True
 
-        await q.answer("🎴 Third Card ရပြီ!")
+        await q.answer(
+            "🎴 Third Card ရပြီ!"
+        )
+
+        # Third card sticker
+        sticker_id = stickers.get(card)
+
+        if sticker_id:
+            await q.message.reply_sticker(
+                sticker_id
+            )
+        else:
+            await q.message.reply_text(
+                f"🎴 {card}"
+            )
 
         await q.message.reply_text(
             f"👤 {p['username']}\n"
-            f"🎴 Third Card: {card}\n"
             f"🔢 Score: {score(p['cards'])}"
         )
 
@@ -464,7 +510,9 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if q.data.startswith("pass:"):
 
-        pid = int(q.data.split(":")[1])
+        pid = int(
+            q.data.split(":")[1]
+        )
 
         if uid != pid:
             return await q.answer(
@@ -479,7 +527,9 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         p["done"] = True
 
-        await q.answer("✋ PASS")
+        await q.answer(
+            "✋ PASS"
+        )
 
         await q.message.reply_text(
             f"👤 {p['username']} PASS\n"
@@ -504,13 +554,16 @@ async def finish(gid, q):
     results = []
 
     for pid, p in g["players"].items():
+
         results.append((
             score(p["cards"]),
             pid,
             p
         ))
 
-    highest = max(x[0] for x in results)
+    highest = max(
+        x[0] for x in results
+    )
 
     winners = [
         x for x in results
@@ -520,18 +573,24 @@ async def finish(gid, q):
     pool = len(results) * BET
     prize = pool // len(winners)
 
-    text = "🏆 SHAN KOE MEE RESULT\n\n"
+    text = (
+        "🏆 SHAN KOE MEE RESULT\n\n"
+    )
 
     for s, pid, p in results:
+
         text += (
             f"👤 {p['username']}\n"
             f"🎴 {', '.join(p['cards'])}\n"
             f"🔢 {s}\n\n"
         )
 
-    text += f"💰 Pool: {pool} Coins\n\n"
+    text += (
+        f"💰 Pool: {pool} Coins\n\n"
+    )
 
     for _, pid, p in winners:
+
         save_user(
             pid,
             p["username"],
@@ -539,31 +598,37 @@ async def finish(gid, q):
         )
 
     if len(winners) == 1:
+
         p = winners[0][2]
 
         text += (
             f"🏆 WINNER: {p['username']}\n"
             f"💰 +{prize} Coins"
         )
+
     else:
+
         names = ", ".join(
             x[2]["username"]
             for x in winners
         )
 
         text += (
-            f"🤝 DRAW\n"
+            "🤝 DRAW\n"
             f"🏆 {names}\n"
             f"💰 Each +{prize} Coins"
         )
 
-    await q.message.reply_text(text)
+    await q.message.reply_text(
+        text
+    )
 
     del games[gid]
 
 
 async def save_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user:
+
         u = update.effective_user
 
         save_user(
@@ -573,6 +638,8 @@ async def save_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def post_init(app):
+
+    # Telegram command menu
     await app.bot.set_my_commands([
         ("start", "Bot စမယ်"),
         ("common", "Commands ကြည့်မယ်"),
@@ -582,19 +649,36 @@ async def post_init(app):
         ("delcoin", "Owner Coin ဖြုတ်မယ်")
     ])
 
+    # Playing_Cards sticker set
     try:
-        pack = await app.bot.get_sticker_set(STICKER_SET)
 
-        for i, sticker in enumerate(pack.stickers[:52]):
-            stickers[DECK[i]] = sticker.file_id
+        pack = await app.bot.get_sticker_set(
+            STICKER_SET
+        )
 
-        print("Cards loaded:", len(stickers))
+        for i, sticker in enumerate(
+            pack.stickers[:52]
+        ):
+
+            stickers[DECK[i]] = (
+                sticker.file_id
+            )
+
+        print(
+            "Card stickers loaded:",
+            len(stickers)
+        )
 
     except Exception as e:
-        print("Sticker error:", e)
+
+        print(
+            "Sticker loading error:",
+            e
+        )
 
 
 def main():
+
     app = (
         Application.builder()
         .token(TOKEN)
@@ -602,15 +686,52 @@ def main():
         .build()
     )
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("common", common))
-    app.add_handler(CommandHandler("game", game))
-    app.add_handler(CommandHandler("balance", balance))
-    app.add_handler(CommandHandler("addcoin", addcoin))
-    app.add_handler(CommandHandler("delcoin", delcoin))
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
 
     app.add_handler(
-        CallbackQueryHandler(callback)
+        CommandHandler(
+            "common",
+            common
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "game",
+            game
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "balance",
+            balance
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "addcoin",
+            addcoin
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "delcoin",
+            delcoin
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            callback
+        )
     )
 
     app.add_handler(
