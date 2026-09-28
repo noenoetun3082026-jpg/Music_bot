@@ -1,6 +1,5 @@
 import os
 import random
-from dataclasses import dataclass, field
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -14,23 +13,6 @@ TOKEN = os.getenv("BOT_TOKEN")
 
 MAX_PLAYERS = 5
 
-
-@dataclass
-class Player:
-    user_id: int
-    name: str
-    cards: list = field(default_factory=list)
-
-
-@dataclass
-class Game:
-    chat_id: int
-    owner_id: int
-    owner_name: str
-    players: dict = field(default_factory=dict)
-    started: bool = False
-
-
 games = {}
 
 
@@ -40,54 +22,32 @@ def card_value(card):
     if rank == "A":
         return 1
 
-    if rank in ["10", "J", "Q", "K"]:
+    if rank in ("10", "J", "Q", "K"):
         return 0
 
     return int(rank)
 
 
-def hand_score(cards):
-    return sum(card_value(c) for c in cards) % 10
+def score(cards):
+    return sum(card_value(card) for card in cards) % 10
 
 
-def make_deck():
+def create_deck():
     suits = ["♠", "♥", "♦", "♣"]
     ranks = [
         "A", "2", "3", "4", "5", "6", "7",
         "8", "9", "10", "J", "Q", "K"
     ]
 
-    deck = [f"{rank}{suit}" for suit in suits for rank in ranks]
+    deck = [rank + suit for suit in suits for rank in ranks]
     random.shuffle(deck)
     return deck
 
 
-def game_text(game):
-    players = list(game.players.values())
-
-    if players:
-        player_text = "\n".join(
-            f"{i}. {p.name}"
-            for i, p in enumerate(players, 1)
-        )
-    else:
-        player_text = "မရှိသေးပါ"
-
-    status = "🟢 ကစားနေပါပြီ" if game.started else "🟡 စောင့်နေသည်"
-
-    return (
-        "🃏 <b>SHAN KOE MEE</b>\n\n"
-        f"👑 အခန်းဖွင့်သူ/ဘဏ်တိုက်: <b>{game.owner_name}</b>\n"
-        f"👥 ကစားသမား: <b>{len(players)}/{MAX_PLAYERS}</b>\n\n"
-        f"{player_text}\n\n"
-        f"{status}"
-    )
-
-
-def lobby_keyboard(game):
+def keyboard(game):
     buttons = []
 
-    if not game.started:
+    if not game["started"]:
         buttons.append([
             InlineKeyboardButton(
                 "🎴 ဝင်ကစားရန်",
@@ -95,7 +55,7 @@ def lobby_keyboard(game):
             )
         ])
 
-        if game.players:
+        if len(game["players"]) > 0:
             buttons.append([
                 InlineKeyboardButton(
                     "▶️ ဂိမ်းစရန်",
@@ -106,22 +66,29 @@ def lobby_keyboard(game):
     return InlineKeyboardMarkup(buttons)
 
 
-def result_text(name, cards):
-    score = hand_score(cards)
+def lobby_text(game):
+    players = game["players"]
 
-    if len(cards) == 2 and score in (8, 9):
-        special = " ⭐ AUTO SHAN"
+    if players:
+        player_list = "\n".join(
+            f"{i}. {name}"
+            for i, name in enumerate(players.values(), 1)
+        )
     else:
-        special = ""
+        player_list = "မရှိသေးပါ"
 
     return (
-        f"🎴 <b>{name}</b>\n"
-        f"ဖဲ: {' '.join(cards)}\n"
-        f"အမှတ်: <b>{score}</b>{special}"
+        "🃏 <b>SHAN KOE MEE</b>\n\n"
+        f"👑 အခန်းဖွင့်သူ/ဘဏ်တိုက်: "
+        f"<b>{game['owner_name']}</b>\n"
+        f"👥 ကစားသမား: "
+        f"<b>{len(players)}/{MAX_PLAYERS}</b>\n\n"
+        f"{player_list}\n\n"
+        "ဝင်ကစားရန် ခလုတ်နှိပ်ပါ။"
     )
 
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🃏 <b>ရှမ်းကိုးမီး အပျော်တမ်း Bot</b>\n\n"
         "/game — GP ထဲမှာ အခန်းဖွင့်ရန်\n"
@@ -130,26 +97,32 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
     await update.message.reply_text(
         "📖 <b>ရှမ်းကိုးမီး အခြေခံစည်းမျဉ်း</b>\n\n"
-        "🅰️ A = 1 မှတ်\n"
+        "A = ၁ မှတ်\n"
         "2–9 = မျက်နှာတန်ဖိုးအတိုင်း\n"
-        "10/J/Q/K = 0 မှတ်\n\n"
-        "🔢 စုစုပေါင်း၏ နောက်ဆုံးဂဏန်းကို အမှတ်အဖြစ်ယူသည်။\n"
-        "⭐ ဖဲ ၂ ရွက်နဲ့ 8 သို့မဟုတ် 9 ရပါက Auto Shan ဖြစ်သည်။\n\n"
-        "⚠️ ဤ Bot သည် ငွေလောင်းကြေးမပါသော အပျော်တမ်းကစားရန်သာ ဖြစ်သည်။",
+        "10/J/Q/K = ၀ မှတ်\n\n"
+        "စုစုပေါင်းရဲ့ နောက်ဆုံးဂဏန်းကို အမှတ်အဖြစ်ယူပါတယ်။\n\n"
+        "⭐ ဖဲ ၂ ရွက်နဲ့ ၈ သို့မဟုတ် ၉ ရရင် Auto Shan ဖြစ်ပါတယ်။\n\n"
+        "⚠️ ငွေလောင်းကြေးမပါသော အပျော်တမ်းဂိမ်းဖြစ်ပါတယ်။",
         parse_mode="HTML"
     )
 
 
-async def game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def game_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
     chat = update.effective_chat
     user = update.effective_user
 
-    if chat.type not in ["group", "supergroup"]:
+    if chat.type not in ("group", "supergroup"):
         await update.message.reply_text(
-            "❌ /game ကို GP ထဲမှာပဲ အသုံးပြုပါ။"
+            "❌ /game ကို GP ထဲမှာ အသုံးပြုပါ။"
         )
         return
 
@@ -159,22 +132,23 @@ async def game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    game = Game(
-        chat_id=chat.id,
-        owner_id=user.id,
-        owner_name=user.full_name
-    )
+    games[chat.id] = {
+        "owner_id": user.id,
+        "owner_name": user.full_name,
+        "players": {},
+        "started": False,
+    }
 
-    games[chat.id] = game
+    game = games[chat.id]
 
     await update.message.reply_text(
-        game_text(game),
+        lobby_text(game),
         parse_mode="HTML",
-        reply_markup=lobby_keyboard(game)
+        reply_markup=keyboard(game)
     )
 
 
-async def callback_handler(
+async def button_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
@@ -186,103 +160,122 @@ async def callback_handler(
 
     game = games.get(chat_id)
 
-    if not game:
+    if game is None:
         await query.answer(
-            "❌ ဒီ Game မရှိတော့ပါ။ /game ပြန်လုပ်ပါ။",
+            "❌ Game မရှိတော့ပါ။ /game ပြန်လုပ်ပါ။",
             show_alert=True
         )
         return
 
     if query.data == "join":
 
-        if game.started:
+        if game["started"]:
             await query.answer(
                 "❌ Game စပြီးပါပြီ။",
                 show_alert=True
             )
             return
 
-        if user.id in game.players:
+        if user.id in game["players"]:
             await query.answer(
-                "✅ သင်ဝင်ပြီးသားပါ။",
+                "✅ ဝင်ပြီးသားပါ။",
                 show_alert=True
             )
             return
 
-        if len(game.players) >= MAX_PLAYERS:
+        if len(game["players"]) >= MAX_PLAYERS:
             await query.answer(
                 "❌ Player 5 ယောက်ပြည့်နေပါပြီ။",
                 show_alert=True
             )
             return
 
-        game.players[user.id] = Player(
-            user_id=user.id,
-            name=user.full_name
-        )
+        game["players"][user.id] = user.full_name
 
         await query.edit_message_text(
-            game_text(game),
+            lobby_text(game),
             parse_mode="HTML",
-            reply_markup=lobby_keyboard(game)
+            reply_markup=keyboard(game)
         )
         return
 
     if query.data == "start":
 
-        if user.id != game.owner_id:
+        if user.id != game["owner_id"]:
             await query.answer(
-                "❌ အခန်းဖွင့်သူပဲ Game စနိုင်ပါတယ်။",
+                "❌ အခန်းဖွင့်သူပဲ ဂိမ်းစနိုင်ပါတယ်။",
                 show_alert=True
             )
             return
 
-        if not game.players:
+        if len(game["players"]) == 0:
             await query.answer(
-                "❌ အနည်းဆုံး Player 1 ယောက် ဝင်ရပါမယ်။",
+                "❌ Player အနည်းဆုံး ၁ ယောက် ဝင်ရပါမယ်။",
                 show_alert=True
             )
             return
 
-        game.started = True
+        game["started"] = True
 
-        deck = make_deck()
+        deck = create_deck()
 
-        # Player တစ်ယောက်စီကို ဖဲ ၂ ရွက်ဝေ
-        for player in game.players.values():
-            player.cards = [deck.pop(), deck.pop()]
+        results = []
 
-        results = [
-            result_text(p.name, p.cards)
-            for p in game.players.values()
-        ]
+        for player_id, name in game["players"].items():
+            cards = [
+                deck.pop(),
+                deck.pop()
+            ]
+
+            total = score(cards)
+
+            if total in (8, 9):
+                special = " ⭐ AUTO SHAN"
+            else:
+                special = ""
+
+            results.append(
+                f"👤 <b>{name}</b>\n"
+                f"🎴 {' '.join(cards)}\n"
+                f"🔢 အမှတ်: <b>{total}</b>{special}"
+            )
 
         await query.edit_message_text(
-            "🃏 <b>SHAN KOE MEE — GAME START!</b>\n\n"
+            "🃏 <b>SHAN KOE MEE — GAME START</b>\n\n"
             + "\n\n".join(results),
             parse_mode="HTML"
         )
-        return
 
 
-async def main():
+def main():
     if not TOKEN:
-        raise RuntimeError("BOT_TOKEN မတွေ့ပါ။ Deployka ENV မှာထည့်ပါ။")
+        raise RuntimeError(
+            "BOT_TOKEN မတွေ့ပါ။ Deployka ENV မှာ "
+            "BOT_TOKEN ထည့်ပါ။"
+        )
 
     app = Application.builder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("game", game_command))
-
     app.add_handler(
-        CallbackQueryHandler(callback_handler)
+        CommandHandler("start", start)
     )
 
-    print("🃏 Shan Koe Mee Bot is running...")
-    await app.run_polling()
+    app.add_handler(
+        CommandHandler("help", help_command)
+    )
+
+    app.add_handler(
+        CommandHandler("game", game_command)
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(button_handler)
+    )
+
+    print("🃏 SHAN KOE MEE BOT STARTED")
+
+    app.run_polling()
 
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
