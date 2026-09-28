@@ -1,802 +1,571 @@
-import os
-import random
-import logging
-
+import os, sqlite3, random
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-)
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 
 TOKEN = os.getenv("BOT_TOKEN")
-STICKER_SET_NAME = "Playing_Cards"
+OWNER = int(os.getenv("BOT_OWNER_ID", "0"))
+DB = "coins.db"
+STICKER_SET = "Playing_Cards"
+BET = 100
 
-MAX_PLAYERS = 5
-MIN_PLAYERS = 2
+db = sqlite3.connect(DB, check_same_thread=False)
+db.execute("""
+CREATE TABLE IF NOT EXISTS coins(
+    uid INTEGER PRIMARY KEY,
+    username TEXT,
+    balance INTEGER DEFAULT 0
+)
+""")
+db.commit()
 
 games = {}
+stickers = {}
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-
-SUITS = ["♠", "♥", "♦", "♣"]
-RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+RANKS = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"]
+SUITS = ["♠","♥","♦","♣"]
+DECK = [r+s for s in SUITS for r in RANKS]
 
 
-def create_deck():
-    deck = [rank + suit for suit in SUITS for rank in RANKS]
-    random.shuffle(deck)
-    return deck
+def get_balance(uid):
+    x = db.execute(
+        "SELECT balance FROM coins WHERE uid=?", (uid,)
+    ).fetchone()
+    return x[0] if x else 0
+
+
+def save_user(uid, username, balance=None):
+    old = get_balance(uid)
+    if balance is None:
+        balance = old
+    db.execute("""
+        INSERT INTO coins(uid,username,balance)
+        VALUES(?,?,?)
+        ON CONFLICT(uid) DO UPDATE SET
+        username=excluded.username,
+        balance=excluded.balance
+    """, (uid, username, balance))
+    db.commit()
 
 
 def card_value(card):
-    rank = card[:-1]
-
-    if rank == "A":
-        return 1
-
-    if rank in ["10", "J", "Q", "K"]:
+    r = card[:-1]
+    if r in ["J","Q","K","10"]:
         return 0
-
-    return int(rank)
-
-
-def calculate_score(hand):
-    return sum(card_value(card) for card in hand) % 10
+    if r == "A":
+        return 1
+    return int(r)
 
 
-def is_auto_shan(hand):
-    return len(hand) == 2 and calculate_score(hand) in [8, 9]
+def score(cards):
+    return sum(card_value(x) for x in cards) % 10
 
 
-def player_name(user):
-    if user.username:
-        return "@" + user.username
-
-    return user.first_name or "Player"
+def is_shan(cards):
+    return len(cards) == 2 and score(cards) in [8, 9]
 
 
-async def load_stickers(bot):
-    sticker_set = await bot.get_sticker_set(name=STICKER_SET_NAME)
-    stickers = sticker_set.stickers
-
-    if len(stickers) < 52:
-        raise RuntimeError(
-            f"{STICKER_SET_NAME} မှာ {len(stickers)} ချပ်ပဲရှိပါတယ်။ 52 ချပ်လိုပါတယ်။"
-        )
-
-    return stickers
-
-
-async def create_sticker_map(bot):
-    stickers = await load_stickers(bot)
-
-    cards = [
-        rank + suit
-        for suit in SUITS
-        for rank in RANKS
-    ]
-
-    return {
-        cards[i]: stickers[i].file_id
-        for i in range(52)
-    }
-
-
-async def send_card(bot, chat_id, card, sticker_map):
-    sticker_id = sticker_map.get(card)
-
-    if not sticker_id:
-        await bot.send_message(
-            chat_id=chat_id,
-            text=f"❌ {card} sticker မတွေ့ပါ။"
-        )
-        return
-
-    await bot.send_sticker(
-        chat_id=chat_id,
-        sticker=sticker_id
-    )
-
-
-def lobby_keyboard():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "🎴 ဝင်ကစားမယ်",
-                callback_data="join"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "▶️ ဂိမ်းစမယ်",
-                callback_data="start"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "❌ အခန်းပိတ်မယ်",
-                callback_data="cancel"
-            )
-        ],
-    ])
-
-
-def play_keyboard():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "🃏 ယူမယ်",
-                callback_data="draw"
-            ),
-            InlineKeyboardButton(
-                "❌ မယူဘူး",
-                callback_data="pass"
-            ),
-        ],
-    ])
-
-
-def result_keyboard():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "🔄 Game အသစ်",
-                callback_data="new_game"
-            )
-        ]
-    ])
-
-
-def lobby_text(game):
-    text = (
-        "🃏 <b>SHAN KOE MEE</b>\n"
-        "━━━━━━━━━━━━━━\n\n"
-        f"👑 ဖွင့်သူ : <b>{game['creator_name']}</b>\n"
-        f"👥 Player : <b>{len(game['players'])}/{MAX_PLAYERS}</b>\n\n"
-    )
-
-    for index, user in enumerate(
-        game["players"],
-        start=1
-    ):
-        text += f"{index}. {player_name(user)}\n"
-
-    text += (
-        "\n━━━━━━━━━━━━━━\n"
-        "🎴 ဝင်ကစားလိုသူ Button နှိပ်ပါ။"
-    )
-
-    return text
-
-
-async def start(update, context):
+async def common(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🃏 <b>SHAN KOE MEE BOT</b>\n\n"
-        "🎮 /game — Game ဖွင့်ရန်\n"
-        "ℹ️ /help — အသုံးပြုနည်း\n"
-        "🧪 /testcards — Sticker စစ်ရန်",
-        parse_mode="HTML",
+        "🃏 SHAN KOE MEE\n\n"
+        "/game - 🎮 Game စမယ်\n"
+        "/balance - 💰 Coin ကြည့်မယ်\n"
+        "/balance @username - 👤 သူ့ Coin ကြည့်မယ်\n"
+        "/common - 📋 Commands\n\n"
+        "👑 OWNER COMMANDS\n"
+        "/addcoin @username 1000\n"
+        "/delcoin @username 100"
     )
 
 
-async def help_command(update, context):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    save_user(
+        update.effective_user.id,
+        update.effective_user.username or update.effective_user.full_name
+    )
     await update.message.reply_text(
-        "🃏 <b>SHAN KOE MEE</b>\n"
-        "━━━━━━━━━━━━━━\n\n"
-        "🎮 /game — Game အခန်းဖွင့်ရန်\n"
-        f"👥 Player အများဆုံး {MAX_PLAYERS} ယောက်\n"
-        f"👤 အနည်းဆုံး {MIN_PLAYERS} ယောက်\n\n"
-        "🎴 Player တစ်ယောက်ကို 2 ကဒ်ဝေမယ်\n"
-        "🃏 လိုရင် တတိယကဒ်ယူမယ်\n"
-        "❌ မလိုရင် မယူဘူးကိုရွေးမယ်\n\n"
-        "✨ 8 / 9 မှတ် = Auto Shan\n"
-        "🅰️ A = 1\n"
-        "2–9 = မူရင်းတန်ဖိုး\n"
-        "10/J/Q/K = 0\n\n"
-        "🏆 အားလုံးဆုံးဖြတ်ပြီးရင် Result ထွက်ပါမယ်။",
-        parse_mode="HTML",
+        "🃏 SHAN KOE MEE BOT ONLINE!\n\n"
+        "/common - Commands\n"
+        "/game - Game စမယ်\n"
+        "/balance - Coin ကြည့်မယ်"
     )
 
 
-async def test_cards(update, context):
-    try:
-        stickers = await load_stickers(context.bot)
-
-    except Exception as error:
-        await update.message.reply_text(
-            "❌ Sticker set ဖတ်မရပါ။\n\n"
-            f"Error: {error}"
-        )
-        return
-
-    await update.message.reply_text(
-        f"🃏 <b>{STICKER_SET_NAME}</b>\n\n"
-        f"Sticker အရေအတွက် : <b>{len(stickers)}</b>\n\n"
-        "ပထမ 5 ချပ် စမ်းပြပါမယ်။",
-        parse_mode="HTML",
-    )
-
-    for sticker in stickers[:5]:
-        await context.bot.send_sticker(
-            chat_id=update.effective_chat.id,
-            sticker=sticker.file_id,
-        )
-
-
-async def game_command(update, context):
-    chat = update.effective_chat
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
-    if chat.type not in ["group", "supergroup"]:
+    save_user(
+        user.id,
+        user.username or user.full_name
+    )
+
+    if context.args:
+        target = context.args[0].lstrip("@")
+        x = db.execute(
+            "SELECT balance FROM coins WHERE username=?",
+            (target,)
+        ).fetchone()
+
         await update.message.reply_text(
-            "❌ Group ထဲမှာပဲ /game သုံးပါ။"
+            f"💰 @{target}: {x[0] if x else 0} Coins"
         )
         return
-
-    if chat.id in games:
-        await update.message.reply_text(
-            "⚠️ ဒီ Group မှာ Game ရှိပြီးသားပါ။"
-        )
-        return
-
-    try:
-        sticker_map = await create_sticker_map(
-            context.bot
-        )
-
-    except Exception as error:
-        await update.message.reply_text(
-            "❌ Playing_Cards sticker set မရပါ။\n\n"
-            f"Error: {error}"
-        )
-        return
-
-    games[chat.id] = {
-        "creator_id": user.id,
-        "creator_name": player_name(user),
-        "players": [user],
-        "deck": [],
-        "hands": {},
-        "scores": {},
-        "passed": set(),
-        "sticker_map": sticker_map,
-        "started": False,
-        "finished": False,
-    }
 
     await update.message.reply_text(
-        lobby_text(games[chat.id]),
-        reply_markup=lobby_keyboard(),
-        parse_mode="HTML",
+        f"💰 Your Balance: {get_balance(user.id)} Coins"
     )
 
 
-def all_players_finished(game):
-    for player in game["players"]:
-
-        hand = game["hands"].get(
-            player.id,
-            []
-        )
-
-        if is_auto_shan(hand):
-            continue
-
-        if len(hand) >= 3:
-            continue
-
-        if player.id in game["passed"]:
-            continue
-
-        return False
-
-    return True
-
-
-async def finish_game(bot, chat_id, game):
-    if game["finished"]:
+async def addcoin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER:
         return
 
-    game["finished"] = True
-
-    results = []
-
-    for player in game["players"]:
-
-        hand = game["hands"].get(
-            player.id,
-            []
-        )
-
-        score = calculate_score(hand)
-
-        game["scores"][player.id] = score
-
-        results.append({
-            "user": player,
-            "score": score,
-            "hand": hand,
-        })
-
-    results.sort(
-        key=lambda x: x["score"],
-        reverse=True
-    )
-
-    text = (
-        "🏆 <b>SHAN KOE MEE RESULT</b>\n"
-        "━━━━━━━━━━━━━━\n\n"
-    )
-
-    medals = ["🥇", "🥈", "🥉"]
-
-    for index, result in enumerate(results):
-
-        medal = (
-            medals[index]
-            if index < 3
-            else "🎴"
-        )
-
-        text += (
-            f"{medal} "
-            f"<b>{player_name(result['user'])}</b>"
-            f" — <b>{result['score']}</b> မှတ်\n"
-        )
-
-    text += (
-        "\n━━━━━━━━━━━━━━\n"
-        "🎉 <b>Game ပြီးပါပြီ။</b>"
-    )
-
-    await bot.send_message(
-        chat_id=chat_id,
-        text=text,
-        reply_markup=result_keyboard(),
-        parse_mode="HTML",
-    )
-
-
-async def button_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    query = update.callback_query
-
-    chat = query.message.chat
-    user = query.from_user
-
-    game = games.get(chat.id)
-
-    if not game:
-        await query.answer(
-            "❌ Game မရှိတော့ပါ။",
-            show_alert=True
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "/addcoin @username 1000"
         )
         return
 
-    if query.data == "join":
+    username = context.args[0].lstrip("@")
 
-        if game["started"]:
-            await query.answer(
-                "❌ Game စပြီးပါပြီ။",
+    try:
+        amount = int(context.args[1])
+    except:
+        await update.message.reply_text("Amount မှန်အောင်ထည့်ပါ။")
+        return
+
+    if amount <= 0:
+        await update.message.reply_text("Amount က 0 ထက်ကြီးရမယ်။")
+        return
+
+    x = db.execute(
+        "SELECT uid,balance FROM coins WHERE username=?",
+        (username,)
+    ).fetchone()
+
+    if not x:
+        await update.message.reply_text(
+            "❌ ဒီ User က Bot နဲ့ အရင် /start လုပ်ထားရမယ်။"
+        )
+        return
+
+    save_user(x[0], username, x[1] + amount)
+
+    await update.message.reply_text(
+        f"✅ @{username}\n"
+        f"💰 +{amount} Coins\n"
+        f"Balance: {x[1] + amount}"
+    )
+
+
+async def delcoin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER:
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "/delcoin @username 100"
+        )
+        return
+
+    username = context.args[0].lstrip("@")
+
+    try:
+        amount = int(context.args[1])
+    except:
+        await update.message.reply_text("Amount မှန်အောင်ထည့်ပါ။")
+        return
+
+    if amount <= 0:
+        await update.message.reply_text("Amount က 0 ထက်ကြီးရမယ်။")
+        return
+
+    x = db.execute(
+        "SELECT uid,balance FROM coins WHERE username=?",
+        (username,)
+    ).fetchone()
+
+    if not x:
+        await update.message.reply_text("❌ User မတွေ့ပါ။")
+        return
+
+    new_balance = max(0, x[1] - amount)
+
+    save_user(x[0], username, new_balance)
+
+    await update.message.reply_text(
+        f"✅ @{username}\n"
+        f"💰 -{amount} Coins\n"
+        f"Balance: {new_balance}"
+    )
+
+
+async def game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type == "private":
+        await update.message.reply_text(
+            "❌ Game ကို Group ထဲမှာပဲ စလို့ရပါတယ်။"
+        )
+        return
+
+    gid = update.effective_chat.id
+
+    if gid in games:
+        await update.message.reply_text(
+            "🎮 Game တစ်ခုရှိပြီးသားပါ။"
+        )
+        return
+
+    user = update.effective_user
+
+    save_user(
+        user.id,
+        user.username or user.full_name
+    )
+
+    games[gid] = {
+        "creator": user.id,
+        "players": {}
+    }
+
+    kb = [[
+        InlineKeyboardButton("➕ JOIN", callback_data="join"),
+        InlineKeyboardButton("▶️ START", callback_data="start")
+    ]]
+
+    await update.message.reply_text(
+        "🃏 SHAN KOE MEE\n\n"
+        "💰 Bet: 100 Coins\n"
+        "👥 Players: 2–5\n\n"
+        "ကစားမယ့်သူ JOIN လုပ်ပါ။",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
+
+
+async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    gid = q.message.chat.id
+    game_data = games.get(gid)
+
+    if not game_data:
+        return
+
+    uid = q.from_user.id
+    username = q.from_user.username or q.from_user.full_name
+
+    save_user(uid, username)
+
+    if q.data == "join":
+
+        if uid in game_data["players"]:
+            return await q.answer(
+                "သင် JOIN လုပ်ပြီးသားပါ။",
                 show_alert=True
             )
-            return
 
-        if any(
-            p.id == user.id
-            for p in game["players"]
-        ):
-            await query.answer(
-                "✅ ဝင်ထားပြီးသားပါ။",
-                show_alert=True
-            )
-            return
-
-        if len(game["players"]) >= MAX_PLAYERS:
-            await query.answer(
+        if len(game_data["players"]) >= 5:
+            return await q.answer(
                 "❌ Player 5 ယောက်ပြည့်ပါပြီ။",
                 show_alert=True
             )
-            return
 
-        game["players"].append(user)
-
-        await query.edit_message_text(
-            lobby_text(game),
-            reply_markup=lobby_keyboard(),
-            parse_mode="HTML",
-        )
-
-        await query.answer(
-            "🎴 Game ထဲဝင်ပြီးပါပြီ။"
-        )
-
-        return
-
-    if query.data == "start":
-
-        if user.id != game["creator_id"]:
-            await query.answer(
-                "❌ Game ဖွင့်သူပဲ စနိုင်ပါတယ်။",
+        if get_balance(uid) < BET:
+            return await q.answer(
+                "❌ Coin 100 မရှိပါ။",
                 show_alert=True
             )
-            return
 
-        if game["started"]:
-            await query.answer(
-                "⚠️ Game စပြီးသားပါ။",
-                show_alert=True
-            )
-            return
+        game_data["players"][uid] = {
+            "username": username,
+            "cards": [],
+            "done": False
+        }
 
-        if len(game["players"]) < MIN_PLAYERS:
-            await query.answer(
-                "❌ အနည်းဆုံး Player 2 ယောက်လိုပါတယ်။",
-                show_alert=True
-            )
-            return
-
-        game["started"] = True
-        game["finished"] = False
-        game["deck"] = create_deck()
-        game["hands"] = {}
-        game["scores"] = {}
-        game["passed"] = set()
-
-        await query.edit_message_text(
-            "🃏 <b>SHAN KOE MEE</b>\n"
-            "━━━━━━━━━━━━━━\n\n"
-            "🎴 ကဒ်များ ဝေနေပါတယ်...\n"
-            "⏳ ခဏစောင့်ပါ။",
-            parse_mode="HTML",
+        players = "\n".join(
+            "• " + x["username"]
+            for x in game_data["players"].values()
         )
 
-        for player in game["players"]:
+        kb = [[
+            InlineKeyboardButton("➕ JOIN", callback_data="join"),
+            InlineKeyboardButton("▶️ START", callback_data="start")
+        ]]
 
-            hand = [
-                game["deck"].pop(),
-                game["deck"].pop()
+        await q.edit_message_text(
+            "🃏 SHAN KOE MEE\n\n"
+            "👥 Players:\n" + players +
+            "\n\n💰 Bet: 100 Coins",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+
+    elif q.data == "start":
+
+        if uid != game_data["creator"]:
+            return await q.answer(
+                "❌ Game ဖွင့်သူပဲ START လုပ်နိုင်ပါတယ်။",
+                show_alert=True
+            )
+
+        if len(game_data["players"]) < 2:
+            return await q.answer(
+                "❌ အနည်းဆုံး 2 ယောက်လိုပါတယ်။",
+                show_alert=True
+            )
+
+        for pid in game_data["players"]:
+            if get_balance(pid) < BET:
+                return await q.answer(
+                    "❌ Player တစ်ယောက်မှာ Coin မလုံလောက်ပါ။",
+                    show_alert=True
+                )
+
+        for pid, player in game_data["players"].items():
+            save_user(
+                pid,
+                player["username"],
+                get_balance(pid) - BET
+            )
+
+        deck = DECK.copy()
+        random.shuffle(deck)
+
+        for pid in game_data["players"]:
+            game_data["players"][pid]["cards"] = [
+                deck.pop(), deck.pop()
             ]
 
-            game["hands"][player.id] = hand
-
-            score = calculate_score(hand)
-
-            game["scores"][player.id] = score
-
-            await send_card(
-                context.bot,
-                chat.id,
-                hand[0],
-                game["sticker_map"]
-            )
-
-            await send_card(
-                context.bot,
-                chat.id,
-                hand[1],
-                game["sticker_map"]
-            )
-
-            if is_auto_shan(hand):
-
-                await context.bot.send_message(
-                    chat_id=chat.id,
-                    text=(
-                        "✨ <b>AUTO SHAN!</b> ✨\n\n"
-                        f"👤 {player_name(player)}\n"
-                        f"🔢 အမှတ် : <b>{score}</b>\n\n"
-                        "🃏 တတိယကဒ်မလိုပါ။"
-                    ),
-                    parse_mode="HTML",
-                )
-
-            else:
-
-                await context.bot.send_message(
-                    chat_id=chat.id,
-                    text=(
-                        f"👤 <b>{player_name(player)}</b>\n\n"
-                        f"🔢 လက်ရှိအမှတ် : <b>{score}</b>\n\n"
-                        "🃏 တတိယကဒ်လိုရင် ယူမယ်ကိုနှိပ်ပါ။\n"
-                        "❌ မလိုရင် မယူဘူးကိုနှိပ်ပါ။"
-                    ),
-                    reply_markup=play_keyboard(),
-                    parse_mode="HTML",
-                )
-
-        await context.bot.send_message(
-            chat_id=chat.id,
-            text=(
-                "🎴 <b>ကဒ်ဝေပြီးပါပြီ။</b>\n\n"
-                "🃏 တတိယကဒ်လိုရင် 「ယူမယ်」\n"
-                "❌ မလိုရင် 「မယူဘူး」 ကိုနှိပ်ပါ။"
-            ),
-            parse_mode="HTML",
+        await q.edit_message_text(
+            "🃏 CARDS DEALT!\n\n"
+            "တစ်ယောက်ချင်းစီရဲ့ Card ကို Bot က ပြပါမယ်။"
         )
 
-        await query.answer()
-        return
-
-    if query.data == "draw":
-
-        if not game["started"]:
-            await query.answer(
-                "❌ Game မစသေးပါ။",
-                show_alert=True
-            )
-            return
-
-        if game["finished"]:
-            await query.answer(
-                "❌ Game ပြီးပါပြီ။",
-                show_alert=True
-            )
-            return
-
-        if user.id not in game["hands"]:
-            await query.answer(
-                "❌ ဒီ Game မှာ မပါပါ။",
-                show_alert=True
-            )
-            return
-
-        hand = game["hands"][user.id]
-
-        if len(hand) >= 3:
-            await query.answer(
-                "⚠️ တတိယကဒ် ရပြီးသားပါ။",
-                show_alert=True
-            )
-            return
-
-        if is_auto_shan(hand):
-            await query.answer(
-                "✨ 8/9 ဖြစ်ပြီးသားမို့ Auto Shan ပါ။",
-                show_alert=True
-            )
-            return
-
-        if user.id in game["passed"]:
-            await query.answer(
-                "❌ မယူဘူးရွေးပြီးသားပါ။",
-                show_alert=True
-            )
-            return
-
-        if not game["deck"]:
-            await query.answer(
-                "❌ Deck ကဒ်ကုန်သွားပါပြီ။",
-                show_alert=True
-            )
-            return
-
-        third_card = game["deck"].pop()
-
-        hand.append(third_card)
-
-        score = calculate_score(hand)
-
-        game["scores"][user.id] = score
-
-        await send_card(
-            context.bot,
-            chat.id,
-            third_card,
-            game["sticker_map"]
-        )
-
-        try:
-            await query.edit_message_reply_markup(
-                reply_markup=None
-            )
-        except Exception:
-            pass
-
-        if score in [8, 9]:
+        for pid, player in game_data["players"].items():
 
             text = (
-                "✨ <b>KOE MEE!</b> ✨\n\n"
-                f"👤 {player_name(user)}\n"
-                f"🔢 အမှတ် : <b>{score}</b>"
+                f"👤 {player['username']}\n"
+                f"🎴 Card: {player['cards'][0]}, "
+                f"{player['cards'][1]}\n"
+                f"🔢 Score: {score(player['cards'])}"
             )
 
-        else:
+            if is_shan(player["cards"]):
+                player["done"] = True
+                text += "\n\n🔥 SHAN!"
 
-            text = (
-                "🃏 <b>တတိယကဒ် ရပါပြီ</b>\n\n"
-                f"👤 {player_name(user)}\n"
-                f"🔢 အမှတ် : <b>{score}</b>"
+            await q.message.reply_text(text)
+
+            if not player["done"]:
+                kb = [[
+                    InlineKeyboardButton(
+                        "🎴 DRAW",
+                        callback_data=f"draw:{pid}"
+                    ),
+                    InlineKeyboardButton(
+                        "✋ PASS",
+                        callback_data=f"pass:{pid}"
+                    )
+                ]]
+
+                await q.message.reply_text(
+                    f"👤 {player['username']} ရွေးပါ။",
+                    reply_markup=InlineKeyboardMarkup(kb)
+                )
+
+        await finish(gid, q)
+
+
+    elif q.data.startswith("draw:"):
+
+        pid = int(q.data.split(":")[1])
+
+        if pid != uid:
+            return await q.answer(
+                "❌ ကိုယ့်အလှည့်မဟုတ်ပါ။",
+                show_alert=True
             )
 
-        await context.bot.send_message(
-            chat_id=chat.id,
-            text=text,
-            parse_mode="HTML",
+        player = game_data["players"].get(uid)
+
+        if not player or player["done"]:
+            return
+
+        used = []
+
+        for p in game_data["players"].values():
+            used += p["cards"]
+
+        available = [c for c in DECK if c not in used]
+
+        card = random.choice(available)
+        player["cards"].append(card)
+        player["done"] = True
+
+        await q.message.reply_text(
+            f"🎴 {player['username']} Third Card: {card}\n"
+            f"🔢 Score: {score(player['cards'])}"
         )
 
-        if all_players_finished(game):
-            await finish_game(
-                context.bot,
-                chat.id,
-                game
+        await finish(gid, q)
+
+
+    elif q.data.startswith("pass:"):
+
+        pid = int(q.data.split(":")[1])
+
+        if pid != uid:
+            return await q.answer(
+                "❌ ကိုယ့်အလှည့်မဟုတ်ပါ။",
+                show_alert=True
             )
 
-        await query.answer(
-            "🃏 တတိယကဒ်ရပါပြီ။"
+        player = game_data["players"].get(uid)
+
+        if not player:
+            return
+
+        player["done"] = True
+
+        await q.message.reply_text(
+            f"✋ {player['username']} PASS\n"
+            f"🔢 Score: {score(player['cards'])}"
         )
 
+        await finish(gid, q)
+
+
+async def finish(gid, q):
+    g = games.get(gid)
+
+    if not g:
         return
 
-    if query.data == "pass":
-
-        if not game["started"]:
-            await query.answer(
-                "❌ Game မစသေးပါ။",
-                show_alert=True
-            )
-            return
-
-        if game["finished"]:
-            await query.answer(
-                "❌ Game ပြီးပါပြီ။",
-                show_alert=True
-            )
-            return
-
-        if user.id not in game["hands"]:
-            await query.answer(
-                "❌ ဒီ Game မှာ မပါပါ။",
-                show_alert=True
-            )
-            return
-
-        hand = game["hands"][user.id]
-
-        if len(hand) >= 3:
-            await query.answer(
-                "⚠️ တတိယကဒ် ရပြီးသားပါ။",
-                show_alert=True
-            )
-            return
-
-        if is_auto_shan(hand):
-            await query.answer(
-                "✨ Auto Shan ဖြစ်ပြီးသားပါ။",
-                show_alert=True
-            )
-            return
-
-        if user.id in game["passed"]:
-            await query.answer(
-                "❌ မယူဘူး ရွေးပြီးသားပါ။",
-                show_alert=True
-            )
-            return
-
-        game["passed"].add(user.id)
-
-        score = calculate_score(hand)
-
-        game["scores"][user.id] = score
-
-        try:
-            await query.edit_message_reply_markup(
-                reply_markup=None
-            )
-        except Exception:
-            pass
-
-        await context.bot.send_message(
-            chat_id=chat.id,
-            text=(
-                "❌ <b>တတိယကဒ် မယူတော့ပါ</b>\n\n"
-                f"👤 <b>{player_name(user)}</b>\n"
-                f"🔢 အမှတ် : <b>{score}</b>"
-            ),
-            parse_mode="HTML",
-        )
-
-        if all_players_finished(game):
-            await finish_game(
-                context.bot,
-                chat.id,
-                game
-            )
-
-        await query.answer(
-            "❌ တတိယကဒ် မယူတော့ပါ။"
-        )
-
+    if not all(
+        p["done"]
+        for p in g["players"].values()
+    ):
         return
 
-    if query.data == "cancel":
+    results = []
 
-        if user.id != game["creator_id"]:
-            await query.answer(
-                "❌ Game ဖွင့်သူပဲ ပိတ်နိုင်ပါတယ်။",
-                show_alert=True
+    for pid, player in g["players"].items():
+        results.append((
+            score(player["cards"]),
+            pid,
+            player
+        ))
+
+    highest = max(x[0] for x in results)
+
+    winners = [
+        x for x in results
+        if x[0] == highest
+    ]
+
+    pool = len(results) * BET
+    prize = pool // len(winners)
+
+    text = "🏆 SHAN KOE MEE RESULT\n\n"
+
+    for s, pid, player in results:
+        text += (
+            f"👤 {player['username']}\n"
+            f"🎴 {', '.join(player['cards'])}\n"
+            f"🔢 {s}\n\n"
+        )
+
+    text += f"💰 Pool: {pool} Coins\n\n"
+
+    if len(winners) == 1:
+        _, pid, player = winners[0]
+
+        save_user(
+            pid,
+            player["username"],
+            get_balance(pid) + pool
+        )
+
+        text += (
+            f"🏆 WINNER: {player['username']}\n"
+            f"💰 +{pool} Coins"
+        )
+
+    else:
+        names = []
+
+        for _, pid, player in winners:
+            save_user(
+                pid,
+                player["username"],
+                get_balance(pid) + prize
             )
-            return
+            names.append(player["username"])
 
-        del games[chat.id]
-
-        await query.edit_message_text(
-            "❌ <b>Game အခန်း ပိတ်လိုက်ပါပြီ။</b>",
-            parse_mode="HTML",
+        text += (
+            "🤝 DRAW\n"
+            f"🏆 {', '.join(names)}\n"
+            f"💰 Each +{prize} Coins"
         )
 
-        await query.answer()
-        return
+    await q.message.reply_text(text)
 
-    if query.data == "new_game":
+    del games[gid]
 
-        del games[chat.id]
 
-        await query.edit_message_text(
-            "🔄 <b>Game အသစ်ဖွင့်နိုင်ပါပြီ။</b>\n\n"
-            "/game ကိုနှိပ်ပြီး အခန်းအသစ်ဖွင့်ပါ။",
-            parse_mode="HTML",
+async def save_message_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user:
+        save_user(
+            update.effective_user.id,
+            update.effective_user.username
+            or update.effective_user.full_name
         )
 
-        await query.answer()
-        return
 
+async def post_init(app):
+    await app.bot.set_my_commands([
+        ("start", "Bot စမယ်"),
+        ("common", "Commands ကြည့်မယ်"),
+        ("game", "Shan Koe Mee ဆော့မယ်"),
+        ("balance", "Coin ကြည့်မယ်"),
+        ("addcoin", "Owner Coin ထည့်မယ်"),
+        ("delcoin", "Owner Coin ဖြုတ်မယ်")
+    ])
 
-async def error_handler(update, context):
-    logging.error(
-        "Bot error: %s",
-        context.error
-    )
+    try:
+        pack = await app.bot.get_sticker_set(STICKER_SET)
+
+        for i, sticker in enumerate(pack.stickers[:52]):
+            stickers[DECK[i]] = sticker.file_id
+
+        print("Card stickers loaded:", len(stickers))
+
+    except Exception as e:
+        print("Sticker error:", e)
 
 
 def main():
-
-    if not TOKEN:
-        raise RuntimeError(
-            "BOT_TOKEN ENV မတွေ့ပါ။"
-        )
-
     app = (
-        Application
-        .builder()
+        Application.builder()
         .token(TOKEN)
+        .post_init(post_init)
         .build()
     )
 
-    app.add_handler(
-        CommandHandler("start", start)
-    )
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("common", common))
+    app.add_handler(CommandHandler("game", game))
+    app.add_handler(CommandHandler("balance", balance))
+    app.add_handler(CommandHandler("addcoin", addcoin))
+    app.add_handler(CommandHandler("delcoin", delcoin))
 
     app.add_handler(
-        CommandHandler("help", help_command)
-    )
-
-    app.add_handler(
-        CommandHandler("game", game_command)
-    )
-
-    app.add_handler(
-        CommandHandler("testcards", test_cards)
+        CallbackQueryHandler(callback)
     )
 
     app.add_handler(
-        CallbackQueryHandler(button_handler)
-    )
-
-    app.add_error_handler(
-        error_handler
-    )
-
-    print(
-        "🃏 SHAN KOE MEE BOT RUNNING..."
+        MessageHandler(
+            filters.ALL,
+            save_message_user
+        )
     )
 
     app.run_polling()
