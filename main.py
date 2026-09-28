@@ -1,6 +1,6 @@
 import logging
 import random
-from telegram import Update
+from telegram import Update, InputMediaPhoto
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -45,30 +45,42 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def play_shan_koe_mee(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ရှမ်းကိုးမီး ကတ်ဝေပေးခြင်းနှင့် ရမှတ်တွက်ချက်ခြင်း"""
+    """ရှမ်းကိုးမီး ကတ် ၂ ချပ်ကို ပုံစံဖော်၍ ပုံနှင့်တကွ ပို့ပေးခြင်း"""
     deck = create_deck()
     
     # ကစားသမားအတွက် ကတ် ၂ ချပ် ပေးခြင်း
     player_hand = [deck.pop(), deck.pop()]
     p_score = calculate_score(player_hand)
     
-    player_cards_str = " ".join([f"{c['rank']}{c['suit']}" for c in player_hand])
-    
-    result_text = (
-        f"🎴 **ရှမ်းကိုးမီး ကစားပွဲ** 🎴\n\n"
-        f"👤 ကစားသူ: {update.effective_user.first_name}\n"
-        f"🎴 သင့်လက်ထဲပါလာသော ဖဲချပ်များ: **{player_cards_str}**\n"
-        f"📊 ရမှတ်: **{p_score} แต้ม**"
-    )
-    
-    # ရှမ်း (သို့) ကိုးမီး ထွက်ခြင်း ရှိမရှိ စစ်ဆေးခြင်း
-    if p_score in [8, 9]:
-        result_text += "\n\n✨ **🎉 ဇယားကြီး (Shan / Koe Mee) ထွက်ပါပြီ! 🎉** ✨"
-    
-    await update.message.reply_text(result_text, parse_mode="Markdown")
+    # ဖဲပုံများအတွက် URL တည်ဆောက်ခြင်း (Deck of Cards API ကို အသုံးပြုသည်)
+    media = []
+    for i, c in enumerate(player_hand):
+        # 10 ကို API ပုံစံအရ '0' ဟုပြောင်းရန်
+        r = '0' if c['rank'] == '10' else c['rank']
+        s_map = {'♠': 'S', '♣': 'C', '♥': 'H', '♦': 'D'}
+        s = s_map[c['suit']]
+        
+        card_url = f"https://deckofcardsapi.com/static/img/{r}{s}.png"
+        
+        # ပထမပုံတွင်သာ စာသား (Caption) ထည့်မည်
+        if i == 0:
+            caption_text = (
+                f"🎴 **ရှမ်းကိုးမီး ကစားပွဲ** 🎴\n\n"
+                f"👤 ကစားသူ: {update.effective_user.first_name}\n"
+                f"📊 ရမှတ်: **{p_score} แต้ม**"
+            )
+            if p_score in [8, 9]:
+                caption_text += "\n✨ **🎉 ဇယားကြီး (Shan / Koe Mee) ထွက်ပါပြီ! 🎉** ✨"
+            
+            media.append(InputMediaPhoto(media=card_url, caption=caption_text, parse_mode="Markdown"))
+        else:
+            media.append(InputMediaPhoto(media=card_url))
+            
+    # Group ထဲသို့ ဖဲပုံ ၂ ချပ်ကို တွဲလျက် ပို့ပေးခြင်း
+    await update.message.reply_media_group(media=media)
 
 def main():
-    # Telegram BotFather မှ ရရှိလာသော Token ကို ဤနေရာတွင် ထည့်ပါ
+    # Telegram BotFather မှ ရရှိလာသော Token
     TOKEN = "8710338486:AAGgcIzcGhe9uagoguy3B_HimQw0MCOzfoo"
     
     app = ApplicationBuilder().token(TOKEN).build()
