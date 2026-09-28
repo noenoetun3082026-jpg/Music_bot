@@ -4,7 +4,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 
 TOKEN = os.getenv("BOT_TOKEN")
 OWNER = int(os.getenv("BOT_OWNER_ID", "0"))
-DB = "coins.db"
+DB = "/data/bot.db"
 STICKER_SET = "Playing_Cards"
 BET = 100
 
